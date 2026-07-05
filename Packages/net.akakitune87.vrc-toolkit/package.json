@@ -1,0 +1,13 @@
+{
+  "name": "net.akakitune87.vrc-toolkit",
+  "displayName": "aki_lua87 VRC Toolkit",
+  "version": "0.0.1",
+  "unity": "2022.3",
+  "description": "...",
+  "vrchatVersion": "2022.1.1",
+  "author": {
+    "name": "aki_lua87"
+  },
+  "legacyFolders": {},
+  "legacyFiles": {}
+}

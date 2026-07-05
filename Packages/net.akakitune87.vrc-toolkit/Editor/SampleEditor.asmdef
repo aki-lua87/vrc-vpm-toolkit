@@ -1,6 +1,12 @@
 {
-    "name": "VRChatPackageTemplate.Editor",
-    "references": [],
+    "name": "SampleEditor",
+    "rootNamespace": "",
+    "references": [
+        "VRC.SDK3",
+        "VRC.Udon",
+        "UdonSharp.Editor",
+        "UnityEditor.UI"
+    ],
     "includePlatforms": [
         "Editor"
     ],
