@@ -1,7 +1,11 @@
 name: Build Release
 
-on: 
+on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Packages/net.akakitune87.vrc-toolkit/package.json'
 
 jobs:
 
