@@ -1,0 +1,40 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: TigerTape
+  m_Shader: {fileID: 4800000, guid: 39b5d25d20024d038e03397b2fd325c3, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 1
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs: []
+    m_Ints: []
+    m_Floats:
+    - _BlackWidth: 0.5
+    - _Brightness: 0.95
+    - _EdgeDarkening: 0.08
+    - _EdgeSoftness: 0.01
+    - _EdgeWidth: 0.06
+    - _StripeAngle: -1.6
+    - _StripeCount: 20.5
+    - _StripeOffset: 0
+    m_Colors:
+    - _BlackColor: {r: 0.018, g: 0.014, b: 0.01, a: 1}
+    - _PatternScale: {r: 1, g: 1, b: 0, a: 0}
+    - _YellowColor: {r: 1, g: 0.6399999, b: 0.015, a: 1}
+  m_BuildTextureStacks: []
