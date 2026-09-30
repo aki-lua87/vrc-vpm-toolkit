@@ -302,11 +302,26 @@ public class MeshCombiner : EditorWindow
             var mesh = smr.sharedMesh;
             var bones = smr.bones;
             var bindposes = mesh.bindposes;
-            var localBoneRemap = new int[bones.Length];
-            for (int boneIdx = 0; boneIdx < bones.Length; boneIdx++)
+            var meshBoneWeights = mesh.boneWeights;
+
+            // ボーンが割り当てられていない (ブレンドシェイプ専用などの) SkinnedMeshRenderer は
+            // スキニングによる変形が一切行われず、自身のトランスフォームがそのまま位置として使われる。
+            // その場合は自身のトランスフォームを単一の剛体ボーンとして結合する。
+            bool isRigid = bones.Length == 0 || meshBoneWeights.Length == 0;
+            int rigidBoneIndex = -1;
+            int[] localBoneRemap = null;
+            if (isRigid)
             {
-                var bindpose = boneIdx < bindposes.Length ? bindposes[boneIdx] : Matrix4x4.identity;
-                localBoneRemap[boneIdx] = GetOrAddBone(bones[boneIdx], bindpose);
+                rigidBoneIndex = GetOrAddBone(smr.transform, Matrix4x4.identity);
+            }
+            else
+            {
+                localBoneRemap = new int[bones.Length];
+                for (int boneIdx = 0; boneIdx < bones.Length; boneIdx++)
+                {
+                    var bindpose = boneIdx < bindposes.Length ? bindposes[boneIdx] : Matrix4x4.identity;
+                    localBoneRemap[boneIdx] = GetOrAddBone(bones[boneIdx], bindpose);
+                }
             }
 
             int vertexOffset = allPositions.Count;
@@ -316,7 +331,6 @@ public class MeshCombiner : EditorWindow
             var uv0 = mesh.uv;
             var uv1 = mesh.uv2;
             var colors32 = mesh.colors32;
-            var meshBoneWeights = mesh.boneWeights;
 
             for (int v = 0; v < vertices.Length; v++)
             {
@@ -326,6 +340,12 @@ public class MeshCombiner : EditorWindow
                 allUv0.Add(v < uv0.Length ? uv0[v] : Vector2.zero);
                 allUv1.Add(v < uv1.Length ? uv1[v] : Vector2.zero);
                 allColors.Add(v < colors32.Length ? colors32[v] : new Color32(255, 255, 255, 255));
+
+                if (isRigid)
+                {
+                    allBoneWeights.Add(new BoneWeight { boneIndex0 = rigidBoneIndex, weight0 = 1f });
+                    continue;
+                }
 
                 var bw = v < meshBoneWeights.Length ? meshBoneWeights[v] : default;
                 allBoneWeights.Add(new BoneWeight
