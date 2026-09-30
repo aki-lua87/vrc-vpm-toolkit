@@ -21,7 +21,7 @@ public class MeshCombiner : EditorWindow
     private void OnGUI()
     {
         EditorGUILayout.LabelField("メッシュ結合", EditorStyles.boldLabel);
-        EditorGUILayout.HelpBox("複数のオブジェクトを登録して結合すると、メッシュを1つに結合した新しいオブジェクトを作成します。元のオブジェクトは非表示になります。同じマテリアルはマージされます。", MessageType.Info);
+        EditorGUILayout.HelpBox("複数のオブジェクトを登録して結合すると、メッシュを1つに結合した新しいオブジェクトを作成します。元のオブジェクトは非表示になります。同じマテリアルはマージされます。SkinnedMeshRenderer (ボーン・ブレンドシェイプ) にも対応しています。", MessageType.Info);
 
         EditorGUILayout.Space();
         EditorGUILayout.LabelField("対象オブジェクト", EditorStyles.boldLabel);
@@ -133,12 +133,30 @@ public class MeshCombiner : EditorWindow
             .Distinct()
             .ToList();
 
-        if (meshFilters.Count == 0)
+        var skinnedMeshRenderers = validTargets
+            .SelectMany(t => t.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            .Where(smr => smr.sharedMesh != null)
+            .Distinct()
+            .ToList();
+
+        if (meshFilters.Count == 0 && skinnedMeshRenderers.Count == 0)
         {
-            EditorUtility.DisplayDialog("メッシュなし", "登録したオブジェクトに MeshFilter と MeshRenderer を持つメッシュが見つかりませんでした。", "OK");
+            EditorUtility.DisplayDialog("メッシュなし", "登録したオブジェクトに MeshFilter/MeshRenderer または SkinnedMeshRenderer を持つメッシュが見つかりませんでした。", "OK");
             return;
         }
 
+        if (skinnedMeshRenderers.Count > 0)
+        {
+            ExecuteSkinnedCombine(validTargets, meshFilters, skinnedMeshRenderers);
+        }
+        else
+        {
+            ExecuteStaticCombine(validTargets, meshFilters);
+        }
+    }
+
+    private void ExecuteStaticCombine(List<GameObject> validTargets, List<MeshFilter> meshFilters)
+    {
         // マテリアルごとにサブメッシュ (メッシュ・サブメッシュインデックス・ワールド行列) をまとめる
         var submeshesByMaterial = new List<Material>();
         var combineListByMaterial = new List<List<CombineInstance>>();
@@ -225,5 +243,329 @@ public class MeshCombiner : EditorWindow
         EditorSceneManager.MarkSceneDirty(activeScene);
 
         EditorUtility.DisplayDialog("完了", $"{meshFilters.Count} 個のメッシュ、{submeshesByMaterial.Count} 個のマテリアルで結合しました。", "OK");
+    }
+
+    // SkinnedMeshRenderer を含む場合、ボーン・バインドポーズ・ブレンドシェイプを保ったまま
+    // 1つの SkinnedMeshRenderer へ手動で結合する。
+    // (Mesh.CombineMeshes はボーンウェイト/ブレンドシェイプを扱えないため)
+    private void ExecuteSkinnedCombine(List<GameObject> validTargets, List<MeshFilter> meshFilters, List<SkinnedMeshRenderer> skinnedMeshRenderers)
+    {
+        var combinedBones = new List<Transform>();
+        var combinedBindposes = new List<Matrix4x4>();
+        var boneIndexMap = new Dictionary<Transform, int>();
+
+        int GetOrAddBone(Transform bone, Matrix4x4 bindpose)
+        {
+            if (bone != null && boneIndexMap.TryGetValue(bone, out int existingIndex))
+            {
+                return existingIndex;
+            }
+
+            combinedBones.Add(bone);
+            combinedBindposes.Add(bindpose);
+            int newIndex = combinedBones.Count - 1;
+            if (bone != null)
+            {
+                boneIndexMap[bone] = newIndex;
+            }
+            return newIndex;
+        }
+
+        var materialsList = new List<Material>();
+        var triangleListsByMaterial = new List<List<int>>();
+
+        int AddMaterialSubmesh(Material material)
+        {
+            int index = materialsList.IndexOf(material);
+            if (index < 0)
+            {
+                materialsList.Add(material);
+                triangleListsByMaterial.Add(new List<int>());
+                index = materialsList.Count - 1;
+            }
+            return index;
+        }
+
+        var allPositions = new List<Vector3>();
+        var allNormals = new List<Vector3>();
+        var allTangents = new List<Vector4>();
+        var allUv0 = new List<Vector2>();
+        var allUv1 = new List<Vector2>();
+        var allColors = new List<Color32>();
+        var allBoneWeights = new List<BoneWeight>();
+
+        var blendShapeSources = new List<(Mesh mesh, int vertexOffset, int vertexCount)>();
+        var blendShapeNames = new List<string>();
+
+        foreach (var smr in skinnedMeshRenderers)
+        {
+            var mesh = smr.sharedMesh;
+            var bones = smr.bones;
+            var bindposes = mesh.bindposes;
+            var localBoneRemap = new int[bones.Length];
+            for (int boneIdx = 0; boneIdx < bones.Length; boneIdx++)
+            {
+                var bindpose = boneIdx < bindposes.Length ? bindposes[boneIdx] : Matrix4x4.identity;
+                localBoneRemap[boneIdx] = GetOrAddBone(bones[boneIdx], bindpose);
+            }
+
+            int vertexOffset = allPositions.Count;
+            var vertices = mesh.vertices;
+            var normals = mesh.normals;
+            var tangents = mesh.tangents;
+            var uv0 = mesh.uv;
+            var uv1 = mesh.uv2;
+            var colors32 = mesh.colors32;
+            var meshBoneWeights = mesh.boneWeights;
+
+            for (int v = 0; v < vertices.Length; v++)
+            {
+                allPositions.Add(vertices[v]);
+                allNormals.Add(v < normals.Length ? normals[v] : Vector3.up);
+                allTangents.Add(v < tangents.Length ? tangents[v] : new Vector4(1f, 0f, 0f, 1f));
+                allUv0.Add(v < uv0.Length ? uv0[v] : Vector2.zero);
+                allUv1.Add(v < uv1.Length ? uv1[v] : Vector2.zero);
+                allColors.Add(v < colors32.Length ? colors32[v] : new Color32(255, 255, 255, 255));
+
+                var bw = v < meshBoneWeights.Length ? meshBoneWeights[v] : default;
+                allBoneWeights.Add(new BoneWeight
+                {
+                    boneIndex0 = bw.weight0 > 0f ? localBoneRemap[bw.boneIndex0] : 0,
+                    weight0 = bw.weight0,
+                    boneIndex1 = bw.weight1 > 0f ? localBoneRemap[bw.boneIndex1] : 0,
+                    weight1 = bw.weight1,
+                    boneIndex2 = bw.weight2 > 0f ? localBoneRemap[bw.boneIndex2] : 0,
+                    weight2 = bw.weight2,
+                    boneIndex3 = bw.weight3 > 0f ? localBoneRemap[bw.boneIndex3] : 0,
+                    weight3 = bw.weight3,
+                });
+            }
+
+            var materials = smr.sharedMaterials;
+            for (int subMeshIndex = 0; subMeshIndex < mesh.subMeshCount; subMeshIndex++)
+            {
+                var material = subMeshIndex < materials.Length ? materials[subMeshIndex] : materials.LastOrDefault();
+                if (material == null)
+                {
+                    continue;
+                }
+
+                int matIndex = AddMaterialSubmesh(material);
+                var tris = mesh.GetTriangles(subMeshIndex);
+                var list = triangleListsByMaterial[matIndex];
+                for (int t = 0; t < tris.Length; t++)
+                {
+                    list.Add(tris[t] + vertexOffset);
+                }
+            }
+
+            if (mesh.blendShapeCount > 0)
+            {
+                blendShapeSources.Add((mesh, vertexOffset, vertices.Length));
+                for (int s = 0; s < mesh.blendShapeCount; s++)
+                {
+                    var shapeName = mesh.GetBlendShapeName(s);
+                    if (!blendShapeNames.Contains(shapeName))
+                    {
+                        blendShapeNames.Add(shapeName);
+                    }
+                }
+            }
+        }
+
+        // 非スキンメッシュは、自身のトランスフォームを単一のボーン (バインドポーズ = identity) として扱うことで
+        // 同じ SkinnedMeshRenderer へ剛体として結合する。
+        foreach (var mf in meshFilters)
+        {
+            var mesh = mf.sharedMesh;
+            var renderer = mf.GetComponent<MeshRenderer>();
+            int boneIndex = GetOrAddBone(mf.transform, Matrix4x4.identity);
+
+            int vertexOffset = allPositions.Count;
+            var vertices = mesh.vertices;
+            var normals = mesh.normals;
+            var tangents = mesh.tangents;
+            var uv0 = mesh.uv;
+            var uv1 = mesh.uv2;
+            var colors32 = mesh.colors32;
+
+            for (int v = 0; v < vertices.Length; v++)
+            {
+                allPositions.Add(vertices[v]);
+                allNormals.Add(v < normals.Length ? normals[v] : Vector3.up);
+                allTangents.Add(v < tangents.Length ? tangents[v] : new Vector4(1f, 0f, 0f, 1f));
+                allUv0.Add(v < uv0.Length ? uv0[v] : Vector2.zero);
+                allUv1.Add(v < uv1.Length ? uv1[v] : Vector2.zero);
+                allColors.Add(v < colors32.Length ? colors32[v] : new Color32(255, 255, 255, 255));
+                allBoneWeights.Add(new BoneWeight { boneIndex0 = boneIndex, weight0 = 1f });
+            }
+
+            var materials = renderer.sharedMaterials;
+            for (int subMeshIndex = 0; subMeshIndex < mesh.subMeshCount; subMeshIndex++)
+            {
+                var material = subMeshIndex < materials.Length ? materials[subMeshIndex] : materials.LastOrDefault();
+                if (material == null)
+                {
+                    continue;
+                }
+
+                int matIndex = AddMaterialSubmesh(material);
+                var tris = mesh.GetTriangles(subMeshIndex);
+                var list = triangleListsByMaterial[matIndex];
+                for (int t = 0; t < tris.Length; t++)
+                {
+                    list.Add(tris[t] + vertexOffset);
+                }
+            }
+        }
+
+        if (materialsList.Count == 0)
+        {
+            EditorUtility.DisplayDialog("メッシュなし", "結合可能なサブメッシュが見つかりませんでした。", "OK");
+            return;
+        }
+
+        var combinedMesh = new Mesh { name = combinedObjectName };
+        if (allPositions.Count > 65535)
+        {
+            combinedMesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+        }
+
+        combinedMesh.SetVertices(allPositions);
+        combinedMesh.SetNormals(allNormals);
+        combinedMesh.SetTangents(allTangents);
+        combinedMesh.SetUVs(0, allUv0);
+        combinedMesh.SetUVs(1, allUv1);
+        combinedMesh.SetColors(allColors);
+        combinedMesh.boneWeights = allBoneWeights.ToArray();
+        combinedMesh.bindposes = combinedBindposes.ToArray();
+
+        combinedMesh.subMeshCount = materialsList.Count;
+        for (int i = 0; i < materialsList.Count; i++)
+        {
+            combinedMesh.SetTriangles(triangleListsByMaterial[i], i);
+        }
+
+        // ブレンドシェイプを名前単位でマージする (欠けているメッシュ/フレームは差分ゼロで埋める)
+        foreach (var shapeName in blendShapeNames)
+        {
+            int maxFrameCount = 0;
+            foreach (var src in blendShapeSources)
+            {
+                int shapeIndex = src.mesh.GetBlendShapeIndex(shapeName);
+                if (shapeIndex >= 0)
+                {
+                    maxFrameCount = Mathf.Max(maxFrameCount, src.mesh.GetBlendShapeFrameCount(shapeIndex));
+                }
+            }
+
+            for (int frame = 0; frame < maxFrameCount; frame++)
+            {
+                var deltaVertices = new Vector3[allPositions.Count];
+                var deltaNormals = new Vector3[allPositions.Count];
+                var deltaTangents = new Vector3[allPositions.Count];
+                float frameWeight = 100f;
+                bool weightSet = false;
+
+                foreach (var src in blendShapeSources)
+                {
+                    int shapeIndex = src.mesh.GetBlendShapeIndex(shapeName);
+                    if (shapeIndex < 0)
+                    {
+                        continue;
+                    }
+
+                    int frameCount = src.mesh.GetBlendShapeFrameCount(shapeIndex);
+                    if (frame >= frameCount)
+                    {
+                        continue;
+                    }
+
+                    var dv = new Vector3[src.vertexCount];
+                    var dn = new Vector3[src.vertexCount];
+                    var dt = new Vector3[src.vertexCount];
+                    float w = src.mesh.GetBlendShapeFrameWeight(shapeIndex, frame);
+                    src.mesh.GetBlendShapeFrameVertices(shapeIndex, frame, dv, dn, dt);
+
+                    for (int v = 0; v < src.vertexCount; v++)
+                    {
+                        deltaVertices[src.vertexOffset + v] = dv[v];
+                        deltaNormals[src.vertexOffset + v] = dn[v];
+                        deltaTangents[src.vertexOffset + v] = dt[v];
+                    }
+
+                    if (!weightSet)
+                    {
+                        frameWeight = w;
+                        weightSet = true;
+                    }
+                }
+
+                combinedMesh.AddBlendShapeFrame(shapeName, frameWeight, deltaVertices, deltaNormals, deltaTangents);
+            }
+        }
+
+        combinedMesh.RecalculateBounds();
+
+        Undo.IncrementCurrentGroup();
+        int undoGroup = Undo.GetCurrentGroup();
+
+        var combinedObject = new GameObject(string.IsNullOrEmpty(combinedObjectName) ? "CombinedMesh" : combinedObjectName);
+        Undo.RegisterCreatedObjectUndo(combinedObject, "メッシュ結合");
+
+        var newSkinnedMeshRenderer = combinedObject.AddComponent<SkinnedMeshRenderer>();
+        newSkinnedMeshRenderer.sharedMesh = combinedMesh;
+        newSkinnedMeshRenderer.bones = combinedBones.ToArray();
+        newSkinnedMeshRenderer.sharedMaterials = materialsList.ToArray();
+        newSkinnedMeshRenderer.localBounds = combinedMesh.bounds;
+
+        var rootBone = skinnedMeshRenderers.Select(s => s.rootBone).FirstOrDefault(rb => rb != null);
+        if (rootBone != null)
+        {
+            newSkinnedMeshRenderer.rootBone = rootBone;
+        }
+
+        // 結合前の各メッシュに設定されていたブレンドシェイプのウェイトを引き継ぐ
+        foreach (var shapeName in blendShapeNames)
+        {
+            int combinedIndex = combinedMesh.GetBlendShapeIndex(shapeName);
+            if (combinedIndex < 0)
+            {
+                continue;
+            }
+
+            foreach (var smr in skinnedMeshRenderers)
+            {
+                int srcIndex = smr.sharedMesh.GetBlendShapeIndex(shapeName);
+                if (srcIndex < 0)
+                {
+                    continue;
+                }
+
+                float weight = smr.GetBlendShapeWeight(srcIndex);
+                if (weight != 0f)
+                {
+                    newSkinnedMeshRenderer.SetBlendShapeWeight(combinedIndex, weight);
+                    break;
+                }
+            }
+        }
+
+        foreach (var target in validTargets)
+        {
+            Undo.RecordObject(target, "メッシュ結合 (元オブジェクト非表示)");
+            target.SetActive(false);
+        }
+
+        var activeScene = EditorSceneManager.GetActiveScene();
+        EditorSceneManager.MoveGameObjectToScene(combinedObject, activeScene);
+
+        Undo.CollapseUndoOperations(undoGroup);
+
+        Selection.activeGameObject = combinedObject;
+        EditorSceneManager.MarkSceneDirty(activeScene);
+
+        int totalMeshCount = skinnedMeshRenderers.Count + meshFilters.Count;
+        EditorUtility.DisplayDialog("完了", $"{totalMeshCount} 個のメッシュ、{materialsList.Count} 個のマテリアルで結合しました (SkinnedMeshRenderer)。", "OK");
     }
 }
